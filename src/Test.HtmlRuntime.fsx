@@ -4,9 +4,14 @@
 #load "CommonRuntime/IO.fs"
 #load "CommonRuntime/TextConversions.fs"
 #load "CommonRuntime/TextRuntime.fs"
+#load "CommonRuntime/Pluralizer.fs"
+#load "CommonRuntime/NameUtils.fs"
+#load "CommonRuntime/StructuralTypes.fs"
+#load "CommonRuntime/StructuralInference.fs"
 #load "Html/HtmlCharRefs.fs"
 #load "Html/HtmlParser.fs"
 #load "Html/HtmlOperations.fs"
+#load "Html/HtmlInference.fs"
 #load "Html/HtmlRuntime.fs"
 #else
 module internal Test.HtmlRuntime
