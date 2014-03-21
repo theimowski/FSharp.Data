@@ -96,32 +96,32 @@ type HtmlElement with
             innerText' x
 
     static member Write(writer:TextWriter, element:HtmlElement) = 
-            let createXmlWriter(baseWriter:TextWriter) =
-                let s = new System.Xml.XmlWriterSettings(Indent = false,
-                                                            OmitXmlDeclaration = true, 
-                                                            ConformanceLevel = System.Xml.ConformanceLevel.Auto)
-                XmlWriter.Create(baseWriter, s)
+        let createXmlWriter(baseWriter:TextWriter) =
+            let s = new System.Xml.XmlWriterSettings(Indent = false,
+                                                     OmitXmlDeclaration = true, 
+                                                     ConformanceLevel = System.Xml.ConformanceLevel.Auto)
+            XmlWriter.Create(baseWriter, s)
                 
-            let rec writeElement (writer:XmlWriter) = function
-                | HtmlText(c) -> writer.WriteValue(c)
-                | HtmlComment(c) -> writer.WriteComment(c)
-                | HtmlScript(c) -> writer.WriteCData(c)
-                | HtmlStyle(c) -> writer.WriteCData(c)
-                | HtmlElement(name, attrs, elems) ->
-                    writer.WriteStartElement(name)
-                    for attr in attrs do
-                        match attr with
-                        | HtmlAttribute(key,value) -> 
-                           if String.IsNullOrEmpty(value)
-                            then writer.WriteStartAttribute(key); writer.WriteEndAttribute()
-                             else writer.WriteAttributeString(key, value)
-                    for elem in elems do 
-                        writeElement writer elem
+        let rec writeElement (writer:XmlWriter) = function
+            | HtmlText(c) -> writer.WriteValue(c)
+            | HtmlComment(c) -> writer.WriteComment(c)
+            | HtmlScript(c) -> writer.WriteCData(c)
+            | HtmlStyle(c) -> writer.WriteCData(c)
+            | HtmlElement(name, attrs, elems) ->
+                writer.WriteStartElement(name)
+                for attr in attrs do
+                    match attr with
+                    | HtmlAttribute(key,value) -> 
+                        if String.IsNullOrEmpty(value)
+                        then writer.WriteStartAttribute(key); writer.WriteEndAttribute()
+                            else writer.WriteAttributeString(key, value)
+                for elem in elems do 
+                    writeElement writer elem
 
-                    writer.WriteEndElement()
+                writer.WriteEndElement()
             
-            use writer = createXmlWriter(writer)
-            writeElement writer element
+        use writer = createXmlWriter(writer)
+        writeElement writer element
 
 type HtmlDocument with
     member x.Body
