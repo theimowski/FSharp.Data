@@ -192,6 +192,7 @@
     <Compile Include="JsonConversions.fs" />
     <Compile Include="CsvReader.fs" />
     <Compile Include="CsvProvider.fs" />
+    <Compile Include="CsvProperties.fs" />
     <Compile Include="XmlProvider.fs" />
     <Compile Include="JsonProvider.fs" />
     <Compile Include="FreebaseProvider.fs" />
