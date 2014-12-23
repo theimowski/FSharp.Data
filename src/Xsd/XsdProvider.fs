@@ -8,10 +8,12 @@ open Microsoft.FSharp.Core.CompilerServices
 open ProviderImplementation.ProvidedTypes
 open ProviderImplementation.ProviderHelpers
 open FSharp.Data.Runtime
+open FSharp.Data.Runtime.BaseTypes
 
 // ----------------------------------------------------------------------------------------------
 
 #nowarn "10001"
+
 
 [<TypeProvider>]
 type public XsdProvider(cfg:TypeProviderConfig) as this =
@@ -33,9 +35,12 @@ type public XsdProvider(cfg:TypeProviderConfig) as this =
         let resolutionFolder = args.[1] :?> string
         let includeMetadata = args.[2] :?> bool
         let failOnUnsupported = args.[3] :?>  bool
+        let encodingStr = ""
+        let resource = ""
+
         
         let parseSingle _ value = XDocument.Parse(value).Root
-        let parseList _ value = XDocument.Parse(value).Root.Elements()
+        let parseList _ value = XDocument.Parse(value).Root.Elements() |> Seq.toArray
         
         let getTypes sample =
           match !types with
@@ -101,7 +106,7 @@ type public XsdProvider(cfg:TypeProviderConfig) as this =
         let providedType =
             generateType "XSD" sample false
                                  parseSingle parseList getSpec
-                                 version this cfg replacer resolutionFolder typeName
+                                 version this cfg replacer encodingStr resolutionFolder resource typeName
         
         let inferedType = getTypes sample
         
