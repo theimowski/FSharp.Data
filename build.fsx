@@ -29,9 +29,9 @@ let summary = "Library of F# type providers and data access tools"
 let description = """
   The F# Data library (FSharp.Data.dll) implements everything you need to access data
   in your F# applications and scripts. It implements F# type providers for working with
-  structured file formats (CSV, JSON and XML) and for accessing the WorldBank and Freebase
-  data. It also includes helpers for parsing JSON and CSV files and for sending HTTP requests."""
-let tags = "F# fsharp data typeprovider WorldBank Freebase CSV XML JSON HTTP"
+  structured file formats (CSV, HTML, JSON and XML) and for accessing the WorldBank and Freebase
+  data. It also includes helpers for parsing CSV, HTML and JSON files and for sending HTTP requests."""
+let tags = "F# fsharp data typeprovider WorldBank Freebase CSV HTML JSON XML HTTP"
 
 let gitHome = "https://github.com/fsharp"
 let gitName = "FSharp.Data"
@@ -97,22 +97,25 @@ Target "CleanInternetCaches" <| fun () ->
 
 Target "Build" <| fun () ->
     !! "FSharp.Data.sln"
+#if MONO
+#else
+    ++ "FSharp.Data.Portable7.sln"
+#endif
     |> MSBuildRelease "" "Rebuild"
     |> ignore
 
 Target "BuildTests" <| fun () ->
     !! "FSharp.Data.Tests.sln"
-    |> MSBuildReleaseExt "" (if buildServer = TeamCity then ["DefineConstants","TEAM_CITY"] else []) "Rebuild"
+    |> MSBuildReleaseExt "" [] "Rebuild"
     |> ignore
 
 Target "BuildConsoleTests" <| fun () ->
-#if MONO
-    !! "TestApps.Console.Mono.sln" // excludes PCL7
-#else
-    //!! "TestApps.Console.sln"
-    !! "TestApps.Console.Mono.sln" // excludes PCL7
-#endif
-    |> MSBuildReleaseExt "" (if buildServer = TeamCity then ["DefineConstants","TEAM_CITY"] else []) "Rebuild"
+    !! "TestApps.Console.sln"
+//#if MONO
+//#else
+//    ++ "TestApps.Console.Portable7.sln"
+//#endif
+    |> MSBuildReleaseExt "" [] "Rebuild"
     |> ignore
 
 // --------------------------------------------------------------------------------------
@@ -163,9 +166,9 @@ Target "SourceLink" <| fun () ->
         Pdbstr.exec proj.OutputFilePdb proj.OutputFilePdbSrcSrv
     CopyFiles "bin" (!! "src/bin/Release/FSharp.Data.*")
     CopyFiles "bin/portable7" (!! "src/bin/portable7/Release/FSharp.Data.*")
-    CopyFiles "bin/portable7" (!! "src/bin/Release/FSharp.*.DesignTime.*")
+    CopyFiles "bin/portable7" (!! "src/bin/Release/FSharp.Data.DesignTime.*")
     CopyFiles "bin/portable47" (!! "src/bin/portable47/Release/FSharp.Data.*")    
-    CopyFiles "bin/portable47" (!! "src/bin/Release/FSharp.*.DesignTime.*")
+    CopyFiles "bin/portable47" (!! "src/bin/Release/FSharp.Data.DesignTime.*")
 
 #endif
 
@@ -196,9 +199,6 @@ Target "NuGet" <| fun () ->
 Target "GenerateDocs" <| fun () ->
     executeFSIWithArgs "docs/tools" "generate.fsx" ["--define:RELEASE"] [] |> ignore
 
-Target "GenerateDocsJa" <| fun () ->
-    executeFSIWithArgs "docs/tools" "generate.ja.fsx" ["--define:RELEASE"] [] |> ignore
-
 // --------------------------------------------------------------------------------------
 // Release Scripts
 
@@ -220,7 +220,7 @@ Target "ReleaseBinaries" <| fun () ->
 
 Target "Release" DoNothing
 
-"CleanDocs" ==> "GenerateDocsJa" ==> "GenerateDocs" ==> "ReleaseDocs"
+"CleanDocs" ==> "GenerateDocs" ==> "ReleaseDocs"
 "ReleaseDocs" ==> "Release"
 "ReleaseBinaries" ==> "Release"
 "NuGet" ==> "Release"

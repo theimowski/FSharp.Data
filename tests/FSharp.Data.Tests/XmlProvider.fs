@@ -1,6 +1,6 @@
 ﻿#if INTERACTIVE
 #r "../../bin/FSharp.Data.dll"
-#r "../../packages/NUnit.2.6.3/lib/nunit.framework.dll"
+#r "../../packages/NUnit/lib/nunit.framework.dll"
 #r "System.Xml.Linq.dll"
 #load "../Common/FsUnit.fs"
 #else
@@ -12,6 +12,28 @@ open System.Xml.Linq
 open NUnit.Framework
 open FsUnit
 open FSharp.Data
+
+[<Test>]
+let ``Can control type inference`` () =
+  let inferred = XmlProvider<"Data/TypeInference.xml", InferTypesFromValues=true>.GetSample().Xs.[0]
+
+  let intLike   : int       = inferred.IntLike
+  let boolLike  : bool      = inferred.BoolLike
+  let jsonValue : JsonValue = inferred.JsonLike.JsonValue
+
+  intLike   |> should equal 123
+  boolLike  |> should equal false
+  jsonValue |> should equal (JsonValue.Record [|"a",(JsonValue.Number 1.0M)|])
+
+  let notInferred = XmlProvider<"Data/TypeInference.xml", InferTypesFromValues=false>.GetSample().Xs.[0]
+
+  let intLike   : string    = notInferred.IntLike
+  let boolLike  : string    = notInferred.BoolLike
+  let jsonValue : string    = notInferred.JsonLike
+
+  intLike   |> should equal "123"
+  boolLike  |> should equal "0"
+  jsonValue |> should equal """{"a":1}"""
 
 type PersonXml = XmlProvider<"""<authors><author name="Ludwig" surname="Wittgenstein" age="29" /></authors>""">
 
@@ -47,7 +69,7 @@ let ``Jim should have an age of 24``() =
 
 [<Test>]
 let ``Type of attribute with empty value is string`` = 
-  XmlProvider<"data/emptyValue.xml">.GetSample().A |> shouldEqual ""
+  XmlProvider<"Data/emptyValue.xml">.GetSample().A |> shouldEqual ""
 
 [<Test>]
 let ``Xml with namespaces``() = 
@@ -57,7 +79,7 @@ let ``Xml with namespaces``() =
 
 [<Test>]
 let ``Can read config with heterogeneous attribute types``() =
-  let config = XmlProvider<"data/heterogeneous.xml">.GetSample()
+  let config = XmlProvider<"Data/heterogeneous.xml">.GetSample()
   let opts = 
     [ for opt in config.Options -> 
         let set = opt.Node.Set in set.Boolean, set.Number, set.String ]
@@ -116,7 +138,7 @@ type Project = XmlProvider<"Data/projects.xml">
 [<Test>]
 let ``Can access the background title``() =
     let doc = Project.GetSample()
-    let background = doc.Backgrounds.Background
+    let background = doc.Background
     background.Title |> should equal "purple stars"
 
 [<Test>]
@@ -158,9 +180,9 @@ let ``XML elements with same name in different namespaces``() =
     ()
 
 [<Test>]
-let ``Optionality infered correctly for child elements``() =
+let ``Optionality inferred correctly for child elements``() =
 
-    let items = XmlProvider<"data/missingInnerValue.xml", SampleIsList=true>.GetSamples()
+    let items = XmlProvider<"Data/missingInnerValue.xml", SampleIsList=true>.GetSamples()
     
     items.Length |> should equal 2
     let child1 = items.[0]
@@ -179,7 +201,7 @@ let ``Optionality infered correctly for child elements``() =
 [<Test>]
 let ``Global inference with empty elements doesn't crash``() =
 
-    let items = XmlProvider<"data/missingInnerValue.xml", SampleIsList=true, Global=true>.GetSamples()
+    let items = XmlProvider<"Data/missingInnerValue.xml", SampleIsList=true, Global=true>.GetSamples()
     
     items.Length |> should equal 2
     let child1 = items.[0]
@@ -224,21 +246,21 @@ let ``Infers type and reads mixed RSS/Atom feed document`` () =
 
 [<Test>]
 let ``Optional value elements should work at runtime when attribute is missing`` () =
-    let samples = XmlProvider<"data/optionals1.xml", SampleIsList=true>.GetSamples()
+    let samples = XmlProvider<"Data/optionals1.xml", SampleIsList=true>.GetSamples()
     samples.[0].Description |> should equal (Some "B")
     samples.[1].Description |> should equal None
     samples.[2].Description |> should equal None
 
 [<Test>]
 let ``Optional value elements should work at runtime when element is missing`` () =
-    let samples = XmlProvider<"data/optionals2.xml", SampleIsList=true>.GetSamples()
+    let samples = XmlProvider<"Data/optionals2.xml", SampleIsList=true>.GetSamples()
     samples.[0].Channel.Items.[0].Description |> should equal None
     samples.[0].Channel.Items.[1].Description |> should equal (Some "A")
     samples.[1].Channel.Items.[0].Description |> should equal None
 
 [<Test>]
 let ``Optional value elements should work at runtime when element is missing 2`` () =
-    let samples = XmlProvider<"data/optionals3.xml", SampleIsList=true>.GetSamples()
+    let samples = XmlProvider<"Data/optionals3.xml", SampleIsList=true>.GetSamples()
     samples.[0].Channel.Items.[0].Title |> should equal (Some "A")
     samples.[1].Channel.Items.[0].Title |> should equal None
     samples.[1].Channel.Items.[1].Title |> should equal (Some "B")
@@ -251,40 +273,48 @@ let ``Collections are collapsed into just one element``() =
     x.Persons.[0] |> should equal "John"
     x.Persons.[1] |> should equal "Doe"
 
-type JsonInXml = XmlProvider<"data/JsonInXml.xml", SampleIsList=true>
+type SampleAzureServiceManagement = XmlProvider<"Data/SampleAzureServiceManagement.xml">
+
+[<Test>]
+let ``Collections are collapsed into just one element 2``() =
+    let x = SampleAzureServiceManagement.GetSample()
+    x.Locations.[0].AvailableServices |> should equal ["Compute"; "Storage"]
+    x.Locations.[1].AvailableServices |> should equal ["Compute"; "Storage"; "PersistentVMRole"; "HighMemory"]
+
+type JsonInXml = XmlProvider<"Data/JsonInXml.xml", SampleIsList=true>
 
 [<Test>]
 let ``Json inside Xml``() =
     let x = JsonInXml.GetSamples()
 
-    x.[0].BlahDataArray.BlahDataSomethingFoos.[0].SomethingSchema |> should equal "Something.Bar"
-    x.[0].BlahDataArray.BlahDataSomethingFoos.[0].Results.Query |> should equal None
-    x.[0].BlahDataArray.BlahDataSomethingFoos.[0].Results.SomethingSchema |> should equal "xpto.Foo"
-    x.[0].BlahDataArray.BlahDataSomethingFoos.[1].SomethingSchema |> should equal "Something.Bar"
-    x.[0].BlahDataArray.BlahDataSomethingFoos.[1].Results.Query |> should equal (Some "fsharp")
-    x.[0].BlahDataArray.BlahDataSomethingFoos.[1].Results.SomethingSchema |> should equal "xpto.Foo"
-    x.[0].BlahDataArray.BlahDataSomethingFoo2.Number |> should equal None
-    x.[0].BlahDataArray.BlahDataSomethingFoo2.Json.Value.SomethingSchema |> should equal "Something.Bar"
-    x.[0].BlahDataArray.BlahDataSomethingFoo2.Json.Value.Results.Query |> should equal "fsharp"
-    x.[0].BlahDataArray.BlahDataSomethingFoo2.Json.Value.Results.SomethingSchema |> should equal "xpto.Foo"
-    x.[0].BlahDataArray.BlahDataSomethingFoo3.Size |> should equal 5
-    x.[0].BlahDataArray.BlahDataSomethingFoo3.Value.SomethingSchema |> should equal "Something.Bar"
-    x.[0].BlahDataArray.BlahDataSomethingFoo3.Value.Results.Query |> should equal "fsharp"
-    x.[0].BlahDataArray.BlahDataSomethingFoo3.Value.Results.SomethingSchema |> should equal "xpto.Foo"
-    x.[0].BlahDataArray.BlahDataSomethingFoo4.IsSome |> should equal true
-    x.[0].BlahDataArray.BlahDataSomethingFoo4.Value.SomethingSchema |> should equal "Something.Bar"
-    x.[0].BlahDataArray.BlahDataSomethingFoo4.Value.Results.Query |> should equal "fsharp"
-    x.[0].BlahDataArray.BlahDataSomethingFoo4.Value.Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[0].BlahData.BlahDataSomethingFoos.[0].SomethingSchema |> should equal "Something.Bar"
+    x.[0].BlahData.BlahDataSomethingFoos.[0].Results.Query |> should equal None
+    x.[0].BlahData.BlahDataSomethingFoos.[0].Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[0].BlahData.BlahDataSomethingFoos.[1].SomethingSchema |> should equal "Something.Bar"
+    x.[0].BlahData.BlahDataSomethingFoos.[1].Results.Query |> should equal (Some "fsharp")
+    x.[0].BlahData.BlahDataSomethingFoos.[1].Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[0].BlahData.BlahDataSomethingFoo2.Number |> should equal None
+    x.[0].BlahData.BlahDataSomethingFoo2.Json.Value.SomethingSchema |> should equal "Something.Bar"
+    x.[0].BlahData.BlahDataSomethingFoo2.Json.Value.Results.Query |> should equal "fsharp"
+    x.[0].BlahData.BlahDataSomethingFoo2.Json.Value.Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[0].BlahData.BlahDataSomethingFoo3.Size |> should equal 5
+    x.[0].BlahData.BlahDataSomethingFoo3.Value.SomethingSchema |> should equal "Something.Bar"
+    x.[0].BlahData.BlahDataSomethingFoo3.Value.Results.Query |> should equal "fsharp"
+    x.[0].BlahData.BlahDataSomethingFoo3.Value.Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[0].BlahData.BlahDataSomethingFoo4.IsSome |> should equal true
+    x.[0].BlahData.BlahDataSomethingFoo4.Value.SomethingSchema |> should equal "Something.Bar"
+    x.[0].BlahData.BlahDataSomethingFoo4.Value.Results.Query |> should equal "fsharp"
+    x.[0].BlahData.BlahDataSomethingFoo4.Value.Results.SomethingSchema |> should equal "xpto.Foo"
 
-    x.[1].BlahDataArray.BlahDataSomethingFoos.[0].SomethingSchema |> should equal "Something.Bar"
-    x.[1].BlahDataArray.BlahDataSomethingFoos.[0].Results.Query |> should equal (Some "fsharp")
-    x.[1].BlahDataArray.BlahDataSomethingFoos.[0].Results.SomethingSchema |> should equal "xpto.Foo"
-    x.[1].BlahDataArray.BlahDataSomethingFoos.[1].SomethingSchema |> should equal "Something.Bar"
-    x.[1].BlahDataArray.BlahDataSomethingFoos.[1].Results.Query |> should equal (Some "fsharp")
-    x.[1].BlahDataArray.BlahDataSomethingFoos.[1].Results.SomethingSchema |> should equal "xpto.Foo"
-    x.[1].BlahDataArray.BlahDataSomethingFoo2.Number |> should equal (Some 2)
-    x.[1].BlahDataArray.BlahDataSomethingFoo3.Size |> should equal 5
-    x.[1].BlahDataArray.BlahDataSomethingFoo4.IsSome |> should equal false
+    x.[1].BlahData.BlahDataSomethingFoos.[0].SomethingSchema |> should equal "Something.Bar"
+    x.[1].BlahData.BlahDataSomethingFoos.[0].Results.Query |> should equal (Some "fsharp")
+    x.[1].BlahData.BlahDataSomethingFoos.[0].Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[1].BlahData.BlahDataSomethingFoos.[1].SomethingSchema |> should equal "Something.Bar"
+    x.[1].BlahData.BlahDataSomethingFoos.[1].Results.Query |> should equal (Some "fsharp")
+    x.[1].BlahData.BlahDataSomethingFoos.[1].Results.SomethingSchema |> should equal "xpto.Foo"
+    x.[1].BlahData.BlahDataSomethingFoo2.Number |> should equal (Some 2)
+    x.[1].BlahData.BlahDataSomethingFoo3.Size |> should equal 5
+    x.[1].BlahData.BlahDataSomethingFoo4.IsSome |> should equal false
 
 let normalize (str:string) =
   str.Replace("\r\n", "\n")
@@ -353,7 +383,7 @@ let ``Can construct collapsed primitive collections``() =
 let ``Can construct collapsed non-primitive collections and elements with json``() =
     let pb = 
         JsonInXml.PropertyBag(
-            JsonInXml.BlahDataArray(
+            JsonInXml.BlahData(
                 [| JsonInXml.BlahDataSomethingFoo("schema", JsonInXml.Results("schema2", Some "query")) |], 
                 null, 
                 null, 

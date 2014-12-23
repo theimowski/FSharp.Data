@@ -26,10 +26,18 @@ type internal ExpectedStackState =
 
 [<AutoOpen>]
 module internal Misc =
-    let TypeBuilderInstantiationType = typeof<TypeBuilder>.Assembly.GetType("System.Reflection.Emit.TypeBuilderInstantiation")
+    let runningOnMono = try System.Type.GetType("Mono.Runtime") <> null with e -> false 
+    let TypeBuilderInstantiationType = 
+        if runningOnMono
+        then typeof<TypeBuilder>.Assembly.GetType("System.Reflection.MonoGenericClass")
+        else typeof<TypeBuilder>.Assembly.GetType("System.Reflection.Emit.TypeBuilderInstantiation")
     let GetTypeFromHandleMethod = typeof<Type>.GetMethod("GetTypeFromHandle")
     let LanguagePrimitivesType = typedefof<list<_>>.Assembly.GetType("Microsoft.FSharp.Core.LanguagePrimitives")
     let ParseInt32Method = LanguagePrimitivesType.GetMethod "ParseInt32"
+    let DecimalConstructor = typeof<decimal>.GetConstructor([| typeof<int>; typeof<int>; typeof<int>; typeof<bool>; typeof<byte> |])
+    let DateTimeConstructor = typeof<DateTime>.GetConstructor([| typeof<int64>; typeof<DateTimeKind> |])
+    let DateTimeOffsetConstructor = typeof<DateTimeOffset>.GetConstructor([| typeof<int64>; typeof<TimeSpan> |])
+    let TimeSpanConstructor = typeof<TimeSpan>.GetConstructor([|typeof<int64>|])
     let isEmpty s = s = ExpectedStackState.Empty
     let isAddress s = s = ExpectedStackState.Address
 
@@ -73,6 +81,15 @@ module internal Misc =
             member __.ConstructorArguments = upcast [| |]
             member __.NamedArguments = upcast [| |] }
 
+    let mkAllowNullLiteralCustomAttributeData value =
+#if FX_NO_CUSTOMATTRIBUTEDATA
+        { new IProvidedCustomAttributeData with 
+#else
+        { new CustomAttributeData() with 
+#endif 
+            member __.Constructor = typeof<AllowNullLiteralAttribute>.GetConstructors().[0]
+            member __.ConstructorArguments = upcast [| CustomAttributeTypedArgument(typeof<bool>, value) |]
+            member __.NamedArguments = upcast [| |] }
     /// This makes an xml doc attribute w.r.t. an amortized computation of an xml doc string.
     /// It is important that the text of the xml doc only get forced when poking on the ConstructorArguments
     /// for the CustomAttributeData object.
@@ -114,6 +131,7 @@ module internal Misc =
     type CustomAttributesImpl() =
         let customAttributes = ResizeArray<CustomAttributeData>()
         let mutable hideObjectMethods = false
+        let mutable nonNullable = false
         let mutable obsoleteMessage = None
         let mutable xmlDocDelayed = None
         let mutable xmlDocAlwaysRecomputed = None
@@ -129,6 +147,7 @@ module internal Misc =
         let customAttributesOnce = 
             lazy 
                [| if hideObjectMethods then yield mkEditorHideMethodsCustomAttributeData() 
+                  if nonNullable then yield mkAllowNullLiteralCustomAttributeData false
                   match xmlDocDelayed with None -> () | Some _ -> customAttributes.Add(mkXmlDocCustomAttributeDataLazy xmlDocDelayedText) 
                   match obsoleteMessage with None -> () | Some s -> customAttributes.Add(mkObsoleteAttributeCustomAttributeData s) 
                   if hasParamArray then yield mkParamArrayCustomAttributeData()
@@ -141,6 +160,7 @@ module internal Misc =
         member __.AddXmlDocDelayed(xmlDoc : unit -> string) = xmlDocDelayed <- Some xmlDoc
         member this.AddXmlDoc(text:string) =  this.AddXmlDocDelayed (fun () -> text)
         member __.HideObjectMethods with set v = hideObjectMethods <- v
+        member __.NonNullable with set v = nonNullable <- v
         member __.AddCustomAttribute(attribute) = customAttributes.Add(attribute)
         member __.GetCustomAttributesData() = 
             [| yield! customAttributesOnce.Force()
@@ -325,6 +345,7 @@ type ProvidedParameter(name:string,parameterType:Type,?isOut:bool,?optionalValue
     override this.Attributes = (base.Attributes ||| (if isOut then ParameterAttributes.Out else enum 0)
                                                 ||| (match optionalValue with None -> enum 0 | Some _ -> ParameterAttributes.Optional ||| ParameterAttributes.HasDefault))
     override this.RawDefaultValue = defaultArg optionalValue null
+    member this.HasDefaultParameterValue = Option.isSome optionalValue
     member __.GetCustomAttributesDataImpl() = customAttributesImpl.GetCustomAttributesData()
 #if FX_NO_CUSTOMATTRIBUTEDATA
 #else
@@ -354,7 +375,6 @@ type ProvidedConstructor(parameters : ProvidedParameter list) =
     member this.AddXmlDoc xmlDoc                            = customAttributesImpl.AddXmlDoc xmlDoc
     member this.AddObsoleteAttribute (msg,?isError)         = customAttributesImpl.AddObsolete (msg,defaultArg isError false)
     member this.AddDefinitionLocation(line,column,filePath) = customAttributesImpl.AddDefinitionLocation(line, column, filePath)
-    member this.HideObjectMethods with set v                = customAttributesImpl.HideObjectMethods <- v
     member __.GetCustomAttributesDataImpl() = customAttributesImpl.GetCustomAttributesData()
 #if FX_NO_CUSTOMATTRIBUTEDATA
 #else
@@ -773,7 +793,7 @@ type ProvidedSymbolType(kind: SymbolKind, args: Type list) =
         | SymbolKind.Array _,[arg] -> arg.Name + "[*]" 
         | SymbolKind.Pointer,[arg] -> arg.Name + "*" 
         | SymbolKind.ByRef,[arg] -> arg.Name + "&"
-        | SymbolKind.Generic gty, args -> gty.FullName + args.ToString()
+        | SymbolKind.Generic gty, args -> gty.Name + (sprintf "%A" args)
         | SymbolKind.FSharpTypeAbbreviation (_,_,path),_ -> path.[path.Length-1]
         | _ -> failwith "unreachable"
 
@@ -1086,6 +1106,7 @@ type ProvidedTypeDefinition(container:TypeContainer,className : string, baseType
     member this.AddObsoleteAttribute (msg,?isError)         = customAttributesImpl.AddObsolete (msg,defaultArg isError false)
     member this.AddDefinitionLocation(line,column,filePath) = customAttributesImpl.AddDefinitionLocation(line, column, filePath)
     member this.HideObjectMethods with set v                = customAttributesImpl.HideObjectMethods <- v
+    member this.NonNullable with set v                = customAttributesImpl.NonNullable <- v
     member __.GetCustomAttributesDataImpl() = customAttributesImpl.GetCustomAttributesData()
     member this.AddCustomAttribute attribute                = customAttributesImpl.AddCustomAttribute attribute
 #if FX_NO_CUSTOMATTRIBUTEDATA
@@ -1555,8 +1576,19 @@ type AssemblyGenerator(assemblyFileName) =
                 match minfo with 
                 | :? ProvidedMethod as pminfo when not (methMap.ContainsKey pminfo)  -> 
                     let mb = tb.DefineMethod(minfo.Name, minfo.Attributes, convType minfo.ReturnType, [| for p in minfo.GetParameters() -> convType p.ParameterType |])
-                    for (i,p) in minfo.GetParameters() |> Seq.mapi (fun i x -> (i,x)) do
-                        mb.DefineParameter(i+1, ParameterAttributes.None, p.Name) |> ignore
+                    for (i,(:? ProvidedParameter as p)) in minfo.GetParameters() |> Seq.mapi (fun i x -> (i,x)) do
+                        let pb = mb.DefineParameter(i+1, ParameterAttributes.None, p.Name)
+                        if p.HasDefaultParameterValue then 
+                            pb.SetConstant p.RawDefaultValue
+                            do
+                                let ctor = typeof<System.Runtime.InteropServices.DefaultParameterValueAttribute>.GetConstructor([|typeof<obj>|])
+                                let builder = new CustomAttributeBuilder(ctor, [|p.RawDefaultValue|])
+                                pb.SetCustomAttribute builder
+                            do
+                                let ctor = typeof<System.Runtime.InteropServices.OptionalAttribute>.GetConstructor([||])
+                                let builder = new CustomAttributeBuilder(ctor, [||])
+                                pb.SetCustomAttribute builder
+                            pb.SetConstant p.RawDefaultValue
                     methMap.[pminfo] <- mb
                 | _ -> () 
 
@@ -1925,6 +1957,27 @@ type AssemblyGenerator(assemblyFileName) =
                             | :? Type as ty ->
                                 ilg.Emit(OpCodes.Ldtoken, convType ty)
                                 ilg.Emit(OpCodes.Call, Misc.GetTypeFromHandleMethod)
+                            | :? decimal as x ->
+                                let bits = System.Decimal.GetBits x
+                                ilg.Emit(OpCodes.Ldc_I4, bits.[0])
+                                ilg.Emit(OpCodes.Ldc_I4, bits.[1])
+                                ilg.Emit(OpCodes.Ldc_I4, bits.[2])
+                                do
+                                    let sign = (bits.[3] &&& 0x80000000) <> 0
+                                    ilg.Emit(if sign then OpCodes.Ldc_I4_1 else OpCodes.Ldc_I4_0)
+                                do
+                                    let scale = byte ((bits.[3] >>> 16) &&& 0x7F)
+                                    ilg.Emit(OpCodes.Ldc_I4_S, scale)
+                                ilg.Emit(OpCodes.Newobj, Misc.DecimalConstructor)
+                            | :? DateTime as x ->
+                                ilg.Emit(OpCodes.Ldc_I8, x.Ticks)
+                                ilg.Emit(OpCodes.Ldc_I4, int x.Kind)
+                                ilg.Emit(OpCodes.Newobj, Misc.DateTimeConstructor)
+                            | :? DateTimeOffset as x ->
+                                ilg.Emit(OpCodes.Ldc_I8, x.Ticks)
+                                ilg.Emit(OpCodes.Ldc_I8, x.Offset.Ticks)
+                                ilg.Emit(OpCodes.Newobj, Misc.TimeSpanConstructor)
+                                ilg.Emit(OpCodes.Newobj, Misc.DateTimeOffsetConstructor)
                             | null -> ilg.Emit(OpCodes.Ldnull)
                             | _ -> failwithf "unknown constant '%A' in generated method" v
                         if isEmpty expectedState then ()
@@ -2192,6 +2245,8 @@ type TypeProviderForNamespaces(namespacesAndTypes : list<(string * list<Provided
 
     let invalidateE = new Event<EventHandler,EventArgs>()    
 
+    let disposing = Event<EventHandler,EventArgs>()
+
 #if FX_NO_LOCAL_FILESYSTEM
 #else
     let probingFolders = ResizeArray()
@@ -2202,9 +2257,13 @@ type TypeProviderForNamespaces(namespacesAndTypes : list<(string * list<Provided
     new (namespaceName:string,types:list<ProvidedTypeDefinition>) = new TypeProviderForNamespaces([(namespaceName,types)])
     new () = new TypeProviderForNamespaces([])
 
+    [<CLIEvent>]
+    member this.Disposing = disposing.Publish
+
 #if FX_NO_LOCAL_FILESYSTEM
     interface System.IDisposable with 
-        member x.Dispose() = ()
+        member x.Dispose() =
+            disposing.Trigger(x, EventArgs.Empty)
 #else
     abstract member ResolveAssembly : args : System.ResolveEventArgs -> Assembly
     default this.ResolveAssembly(args) = 
@@ -2226,7 +2285,9 @@ type TypeProviderForNamespaces(namespacesAndTypes : list<(string * list<Provided
         |> IO.Path.GetDirectoryName
         |> this.RegisterProbingFolder
     interface System.IDisposable with 
-        member x.Dispose() = AppDomain.CurrentDomain.remove_AssemblyResolve handler
+        member x.Dispose() = 
+            disposing.Trigger(x, EventArgs.Empty)
+            AppDomain.CurrentDomain.remove_AssemblyResolve handler
 #endif
 
     member __.AddNamespace (namespaceName,types:list<_>) = otherNamespaces.Add (namespaceName,types)

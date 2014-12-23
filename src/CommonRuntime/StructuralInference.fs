@@ -5,6 +5,7 @@ open System
 open System.Diagnostics
 open System.Collections.Generic
 open System.Globalization
+open FSharp.Data
 open FSharp.Data.Runtime
 open FSharp.Data.Runtime.StructuralTypes
 
@@ -243,6 +244,7 @@ let inferPrimitiveType (cultureInfo:CultureInfo) (value : string) =
 
   // Helper for calling TextConversions.AsXyz functions
   let (|Parse|_|) func value = func cultureInfo value
+  let (|ParseNoCulture|_|) func value = func value
 
   let asGuid _ value = TextConversions.AsGuid value
 
@@ -279,7 +281,7 @@ let inferPrimitiveType (cultureInfo:CultureInfo) (value : string) =
   | "" -> null
   | Parse TextConversions.AsInteger 0 -> typeof<Bit0>
   | Parse TextConversions.AsInteger 1 -> typeof<Bit1>
-  | Parse TextConversions.AsBoolean _ -> typeof<bool>
+  | ParseNoCulture TextConversions.AsBoolean _ -> typeof<bool>
   | Parse TextConversions.AsInteger _ -> typeof<int>
   | Parse TextConversions.AsInteger64 _ -> typeof<int64>
   | Parse TextConversions.AsDecimal _ -> typeof<decimal>
@@ -293,3 +295,39 @@ let getInferedTypeFromString cultureInfo value unit =
     match inferPrimitiveType cultureInfo value with
     | null -> InferedType.Null
     | typ -> InferedType.Primitive(typ, unit, false)
+
+type IUnitsOfMeasureProvider =
+    abstract SI : str:string -> System.Type
+    abstract Product : measure1: System.Type * measure2: System.Type  -> System.Type
+    abstract Inverse : denominator: System.Type -> System.Type
+
+let defaultUnitsOfMeasureProvider = 
+    { new IUnitsOfMeasureProvider with
+        member x.SI(_): Type = null
+        member x.Product(_, _) = failwith "Not implemented yet"
+        member x.Inverse(_) = failwith "Not implemented yet" }
+
+let private uomTransformations = [
+    ["²"; "^2"], fun (provider:IUnitsOfMeasureProvider) t -> provider.Product(t, t)
+    ["³"; "^3"], fun (provider:IUnitsOfMeasureProvider) t -> provider.Product(provider.Product(t, t), t)
+    ["^-1"], fun (provider:IUnitsOfMeasureProvider) t -> provider.Inverse(t) ]
+
+let parseUnitOfMeasure (provider:IUnitsOfMeasureProvider) (str:string) = 
+    let unit =
+        uomTransformations
+        |> List.collect (fun (suffixes, trans) -> suffixes |> List.map (fun suffix -> suffix, trans))
+        |> List.tryPick (fun (suffix, trans) ->
+            if str.EndsWith suffix then
+                let baseUnitStr = str.[..str.Length - suffix.Length - 1]
+                let baseUnit = provider.SI baseUnitStr
+                if baseUnit = null then 
+                    None 
+                else 
+                    baseUnit |> trans provider |> Some
+            else
+                None)
+    match unit with
+    | Some _ -> unit
+    | None ->
+        let unit = provider.SI str
+        if unit = null then None else Some unit

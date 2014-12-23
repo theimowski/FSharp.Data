@@ -4,19 +4,23 @@
 namespace FSharp.Data
 
 open System.Xml.Linq
+open System.Runtime.InteropServices
 
+// XElementExtensions is not a static class with C#-style extension methods because that would
+// force to reference System.Xml.Linq.dll everytime you reference FSharp.Data, even when not using
+// any of the XML parts
 [<AutoOpen>]
-/// Extension methods for XElement. It is auto opened.
+/// Extension methods for XElement
 module XElementExtensions = 
 
     type XElement with
 
       /// Sends the XML to the specified uri. Defaults to a POST request.
-      member x.Request(uri:string, ?httpMethod, ?headers) =  
-        let httpMethod = defaultArg httpMethod HttpMethod.Post
-        let headers = defaultArg headers []
+      member x.Request(uri:string, [<Optional>] ?httpMethod, [<Optional>] ?headers:seq<_>) =  
+        let httpMethod = defaultArg httpMethod HttpMethod.Post  
+        let headers = defaultArg (Option.map List.ofSeq headers) []
         let headers =
-            if headers |> List.exists (fst >> ((=) (fst (HttpRequestHeaders.UserAgent ""))))
+            if headers |> List.exists (fst >> (=) (fst (HttpRequestHeaders.UserAgent "")))
             then headers
             else HttpRequestHeaders.UserAgent "F# Data XML Type Provider" :: headers
         let headers = HttpRequestHeaders.ContentType HttpContentTypes.Xml :: headers
@@ -27,11 +31,11 @@ module XElementExtensions =
           httpMethod = httpMethod)
 
       /// Sends the XML to the specified uri. Defaults to a POST request.
-      member x.RequestAsync(uri:string, ?httpMethod, ?headers) =
+      member x.RequestAsync(uri:string, [<Optional>] ?httpMethod, [<Optional>] ?headers:seq<_>) =
         let httpMethod = defaultArg httpMethod HttpMethod.Post
-        let headers = defaultArg headers []
+        let headers = defaultArg (Option.map List.ofSeq headers) []
         let headers =
-            if headers |> List.exists (fst >> ((=) (fst (HttpRequestHeaders.UserAgent ""))))
+            if headers |> List.exists (fst >> (=) (fst (HttpRequestHeaders.UserAgent "")))
             then headers
             else HttpRequestHeaders.UserAgent "F# Data XML Type Provider" :: headers
         let headers = HttpRequestHeaders.ContentType HttpContentTypes.Xml :: headers
@@ -41,12 +45,13 @@ module XElementExtensions =
           headers = headers,
           httpMethod = httpMethod)
 
-namespace FSharp.Data.Runtime
+// --------------------------------------------------------------------------------------
+
+namespace FSharp.Data.Runtime.BaseTypes
 
 open System
 open System.ComponentModel
 open System.IO
-open System.Globalization
 open System.Xml.Linq
 
 #nowarn "10001"
@@ -98,6 +103,15 @@ type XmlElement =
       XDocument.Parse("<root>" + text + "</root>").Root.Elements()
       |> Seq.map (fun value -> { XElement = value })
       |> Seq.toArray
+
+// --------------------------------------------------------------------------------------
+
+namespace FSharp.Data.Runtime
+
+open System
+open System.IO
+open System.Xml.Linq
+open FSharp.Data.Runtime.BaseTypes
 
 /// Static helper methods called from the generated code for working with XML
 type XmlRuntime = 
@@ -251,10 +265,14 @@ type XmlRuntime =
                     let v = 
                         (v, Seq.skip 1 parentNames)
                         ||> Seq.fold (fun element nameWithNS -> 
-                            let element = element.Parent
-                            if element.Name.ToString() <> nameWithNS then
-                                failwithf "Unexpected element: %O" v
-                            element)
+                            if element.Parent = null then 
+                                let parent = createElement null nameWithNS 
+                                parent.Add element
+                                parent
+                            else 
+                                if element.Parent.Name.ToString() <> nameWithNS then
+                                    failwithf "Unexpected element: %O" v
+                                element.Parent)
                     element.Add v
                 | :? string as v -> 
                     let child = createElement element nameWithNS 

@@ -352,6 +352,9 @@ type ProvidedTypeDefinition =
     /// Suppress System.Object entries in intellisense menus in instances of this provided type 
     member HideObjectMethods  : bool with set
 
+    /// Disallows the use of the null literal. 
+    member NonNullable : bool with set
+
     /// Get or set a flag indicating if the ProvidedTypeDefinition is erased
     member IsErased : bool  with get,set
 
@@ -426,5 +429,8 @@ type TypeProviderForNamespaces =
     /// Registers location of RuntimeAssembly (from TypeProviderConfig) as probing folder
     member RegisterRuntimeAssemblyLocationAsProbingFolder : cfg : Core.CompilerServices.TypeProviderConfig -> unit
 #endif
+
+    [<CLIEvent>]
+    member Disposing : IEvent<EventHandler,EventArgs>
 
     interface ITypeProvider

@@ -6,25 +6,27 @@ namespace ProviderImplementation
 open System
 open Microsoft.FSharp.Quotations
 open Microsoft.FSharp.Reflection
+open FSharp.Data
 open FSharp.Data.Runtime
 open ProviderImplementation
 open ProviderImplementation.ProvidedTypes
 open ProviderImplementation.QuotationBuilder
 
-type private FieldInfo = 
-  { TypeForTuple : Type
-    Property : ProvidedProperty
-    Convert: Expr -> Expr
-    ConvertBack: Expr -> Expr }
-
 module internal CsvTypeBuilder =
+
+  type private FieldInfo = 
+    { TypeForTuple : Type
+      Property : ProvidedProperty
+      Convert: Expr -> Expr
+      ConvertBack: Expr -> Expr }
 
   let generateTypes asm ns typeName (missingValuesStr, cultureStr) replacer inferredFields =
     
     let fields = inferredFields |> List.mapi (fun index field ->
       let typ, typWithoutMeasure, conv, convBack = ConversionsGenerator.convertStringValue replacer missingValuesStr cultureStr field
+      let propertyName = NameUtils.capitalizeFirstLetter field.Name
       { TypeForTuple = typWithoutMeasure
-        Property = ProvidedProperty(field.Name, typ, GetterCode = fun (Singleton row) -> Expr.TupleGet(row, index))
+        Property = ProvidedProperty(propertyName, typ, GetterCode = fun (Singleton row) -> Expr.TupleGet(row, index))
         Convert = fun rowVarExpr -> conv <@ TextConversions.AsString((%%rowVarExpr:string[]).[index]) @>
         ConvertBack = fun rowVarExpr -> convBack (Expr.TupleGet(rowVarExpr, index)) } )
 

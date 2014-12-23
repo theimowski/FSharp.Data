@@ -2,6 +2,18 @@
 // Utilities for working with network, downloading resources with specified headers etc.
 // --------------------------------------------------------------------------------------
 
+#if FX_NO_DEFAULT_PARAMETER_VALUE_ATTRIBUTE
+
+namespace System.Runtime.InteropServices
+
+open System
+
+[<AttributeUsageAttribute(AttributeTargets.Parameter, Inherited = false)>]
+type OptionalAttribute() = 
+    inherit Attribute()
+
+#endif
+
 namespace FSharp.Data
 
 open System
@@ -11,6 +23,7 @@ open System.Net
 open System.Text
 open System.Reflection
 open System.Runtime.CompilerServices
+open System.Runtime.InteropServices
 open FSharp.Data.Runtime
 
 /// The method to use in an HTTP request
@@ -33,7 +46,7 @@ module HttpMethod =
     /// Reserved for use with a proxy that can dynamically switch to being a tunnel 
     let Connect = "CONNECT"
 
-/// Header to send in an HTTP request
+/// Headers that can be sent in an HTTP request
 module HttpRequestHeaders =
     /// Content-Types that are acceptable for the response
     let Accept (contentType:string) = "Accept", contentType
@@ -122,7 +135,7 @@ module HttpRequestHeaders =
     /// Override HTTP method. 
     let XHTTPMethodOverride (httpMethod:string) = "X-HTTP-Method-Override", httpMethod
 
-/// Header received in an HTTP response
+/// Headers that can be received in an HTTP response
 module HttpResponseHeaders =
     /// Specifying which web sites can participate in cross-origin resource sharing
     let [<Literal>] AccessControlAllowOrigin = "Access-Control-Allow-Origin"
@@ -211,6 +224,7 @@ type HttpResponse =
   { Body : HttpResponseBody
     StatusCode: int
     ResponseUrl : string
+    /// If the same header is present multiple times, the values will be concatenated with comma as the separator
     Headers : Map<string,string>
     Cookies : Map<string,string> }
 
@@ -219,11 +233,14 @@ type HttpResponseWithStream =
   { ResponseStream : Stream
     StatusCode: int
     ResponseUrl : string
+    /// If the same header is present multiple times, the values will be concatenated with comma as the separator
     Headers : Map<string,string>
     Cookies : Map<string,string> }
 
 /// Constants for common HTTP content types
 module HttpContentTypes =
+    /// */*
+    let [<Literal>] Any = "*/*"
     /// plain/text
     let [<Literal>] Text = "plain/text"
     /// application/octet-stream
@@ -257,8 +274,26 @@ module HttpContentTypes =
 
 type private HeaderEnum = System.Net.HttpRequestHeader
 
+/// Constants for common HTTP encodings
+module HttpEncodings = 
+
+    /// ISO-8859-1
+    let PostDefaultEncoding = Encoding.GetEncoding("ISO-8859-1") // http://stackoverflow.com/questions/708915/detecting-the-character-encoding-of-an-http-post-request/708942#708942
+
+    /// ISO-8859-1
+    let ResponseDefaultEncoding = Encoding.GetEncoding("ISO-8859-1") // http://www.ietf.org/rfc/rfc2616.txt
+
+    let internal getEncoding (encodingStr:string) = 
+#if FX_NO_GETENCODING_BY_CODEPAGE
+        Encoding.GetEncoding encodingStr
+#else
+        match Int32.TryParse(encodingStr, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+        | true, codepage -> Encoding.GetEncoding codepage                
+        | _ -> Encoding.GetEncoding encodingStr
+#endif
+
 [<AutoOpen>]
-module private Helpers =
+module private HttpHelpers =
 
     /// consumes a stream asynchronously until the end
     /// and returns a memory stream with the full content
@@ -278,9 +313,9 @@ module private Helpers =
         return output 
     }
 
-    let (?) obj prop =
+    let getProperty (typ:Type) obj prop =
 #if FX_NET_CORE_REFLECTION
-        let prop = obj.GetType().GetRuntimeProperty(prop)
+        let prop = typ.GetRuntimeProperty(prop)
         if prop <> null && prop.CanRead then
             try
                 prop.GetValue(obj) |> unbox |> Some
@@ -289,7 +324,7 @@ module private Helpers =
         else
             None
 #else
-        let prop = obj.GetType().GetProperty(prop)
+        let prop = typ.GetProperty(prop)
         if prop <> null && prop.CanRead then
             try
                 prop.GetValue(obj, [| |]) |> unbox |> Some
@@ -298,6 +333,9 @@ module private Helpers =
         else
             None
 #endif
+
+    let (?) obj prop =
+        getProperty (obj.GetType()) obj prop
 
     let (?<-) obj prop value =
 #if FX_NET_CORE_REFLECTION
@@ -382,8 +420,8 @@ module private Helpers =
 
     let setHeaders headers (req:HttpWebRequest) =
         let hasContentType = ref false
-        headers |> Option.iter (checkForRepeatedHeaders [])
-        headers |> Option.iter (List.iter (fun (header:string, value) ->
+        checkForRepeatedHeaders [] headers
+        headers |> List.iter (fun (header:string, value) ->
             match header.ToLowerInvariant() with
             | "accept" -> req.Accept <- value
             | "accept-charset" -> req.Headers.[HeaderEnum.AcceptCharset] <- value
@@ -463,7 +501,8 @@ module private Helpers =
 #endif
             | "via" -> req.Headers.[HeaderEnum.Via] <- value
             | "warning" -> req.Headers.[HeaderEnum.Warning] <- value
-            | _ -> req.Headers.[header] <- value))
+            | _ -> req.Headers.[header] <- value
+        )
         hasContentType.Value
 
     let getResponse (req:HttpWebRequest) silentHttpErrors =
@@ -502,8 +541,8 @@ module private Helpers =
         memoryStream
 #endif
 
-    let toHttpResponse forceText responseUrl statusCode contentType characterSet
-                       responseEncodingOverride cookies headers (memoryStream:MemoryStream) = async {
+    let toHttpResponse forceText responseUrl statusCode contentType contentEncoding
+                       characterSet responseEncodingOverride cookies headers stream = async {
 
         let isText (mimeType:string) =
             let isText (mimeType:string) =
@@ -514,18 +553,28 @@ module private Helpers =
                 mimeType = HttpContentTypes.JavaScript ||
                 mimeType = "application/ecmascript" ||
                 mimeType = "application/xml-dtd" ||
-                mimeType.StartsWith "application/" && mimeType.EndsWith "+xml"
+                mimeType.StartsWith "application/" && mimeType.EndsWith "+xml" ||
+                mimeType.StartsWith "application/" && mimeType.EndsWith "+json"
             mimeType.Split([| ';' |], StringSplitOptions.RemoveEmptyEntries)
             |> Array.exists isText
 
+        use stream = stream
+        let! memoryStream = asyncRead stream
+
+        let memoryStream = 
+            // this only applies when automatic decompression is off
+            if contentEncoding = "gzip" then decompressGZip memoryStream
+            elif contentEncoding = "deflate" then decompressDeflate memoryStream
+            else memoryStream
+
         let respBody = 
             if forceText || isText contentType then
-                use sr = 
+                let encoding =
                     match (defaultArg responseEncodingOverride ""), characterSet with
-                    | "", "" -> new StreamReader(memoryStream)
-                    | "", characterSet -> new StreamReader(memoryStream, Encoding.GetEncoding(characterSet))
-                    | responseEncodingOverride, _ -> new StreamReader(memoryStream, Encoding.GetEncoding(responseEncodingOverride))
-
+                    | "", "" -> HttpEncodings.ResponseDefaultEncoding
+                    | "", characterSet -> Encoding.GetEncoding characterSet
+                    | responseEncodingOverride, _ -> HttpEncodings.getEncoding responseEncodingOverride
+                use sr = new StreamReader(memoryStream, encoding)
                 sr.ReadToEnd() |> Text
             else
                 memoryStream.ToArray() |> Binary
@@ -536,6 +585,64 @@ module private Helpers =
                  Headers = headers
                  Cookies = cookies }
     }
+
+#if FX_NO_WEBREQUEST_AUTOMATICDECOMPRESSION
+    let isWindowsPhone =
+        let runningOnMono = Type.GetType("Mono.Runtime") <> null
+        if runningOnMono then
+            false
+        else
+            match getProperty typeof<Environment> null "OSVersion" with
+            | Some osVersion ->
+                match osVersion?Version with
+                | Some (version:Version) ->
+                    // Latest Windows is 6.x, so OS >= 8 will be Windows Phone
+                    version.Major >= 8
+                | _ -> false
+            | _ -> false
+#endif
+
+    // .NET has trouble parsing some cookies. See http://stackoverflow.com/a/22098131/165633
+    let getAllCookiesFromHeader (header:string) (responseUri:Uri) (cookieContainer:CookieContainer) =
+        let cookiesWithWrongSplit = header.Replace("\r", "").Replace("\n", "").Split(',')
+        let cookies = ResizeArray()
+        let mutable i = 0
+        while i < cookiesWithWrongSplit.Length do
+            // the next command is not a new cookie but part of the current one
+            if cookiesWithWrongSplit.[i].IndexOf("expires=", StringComparison.OrdinalIgnoreCase) > 0 then
+                cookies.Add(cookiesWithWrongSplit.[i] + "," + cookiesWithWrongSplit.[i + 1])
+                i <- i + 1
+            else
+                cookies.Add(cookiesWithWrongSplit.[i])
+            i <- i + 1
+        for cookieStr in cookies do
+            let cookie = new Cookie()
+            cookieStr.Split ';'
+            |> Array.iteri (fun i cookiePart ->
+                let cookiePart = cookiePart.Trim()
+                if i = 0 then
+                    let firstEqual = cookiePart.IndexOf "="
+                    cookie.Name <- cookiePart.Substring(0, firstEqual)
+                    cookie.Value <- cookiePart.Substring(firstEqual + 1)
+                elif cookiePart.IndexOf("path", StringComparison.OrdinalIgnoreCase) = 0 then
+                    let kvp = cookiePart.Split '='
+                    if kvp.[1] <> "" && kvp.[1] <> "/" then
+                        cookie.Path <- kvp.[1]
+                elif cookiePart.IndexOf("domain", StringComparison.OrdinalIgnoreCase) = 0 then
+                    let kvp = cookiePart.Split '='
+                    if kvp.[1] <> "" then
+                        cookie.Domain <- kvp.[1]
+                elif cookiePart.Equals("secure", StringComparison.OrdinalIgnoreCase) then
+                    cookie.Secure <- true
+                elif cookiePart.Equals("httponly", StringComparison.OrdinalIgnoreCase) then
+                    cookie.HttpOnly <- true
+            )
+
+            if cookie.Domain = "" then
+                cookie.Domain <- responseUri.Host
+
+            let uri = Uri((if cookie.Secure then "https://" else "http://") + cookie.Domain.TrimStart('.') + cookie.Path)
+            cookieContainer.Add(uri, cookie)
 
 /// Utilities for working with network via HTTP. Includes methods for downloading 
 /// resources with specified headers, query parameters and HTTP body
@@ -549,10 +656,10 @@ type Http private() =
         | query ->
             url
             + if url.Contains "?" then "&" else "?"
-            + String.concat "&" [ for k, v in query -> Uri.EscapeUriString k + "=" + Uri.EscapeUriString v ]
+            + String.concat "&" [ for k, v in query -> Uri.EscapeDataString k + "=" + Uri.EscapeDataString v ]
 
-    static member private InnerRequest(url:string, toHttpResponse, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, 
-                                       ?silentHttpErrors, ?responseEncodingOverride, ?customizeHttpRequest) =
+    static member private InnerRequest(url:string, toHttpResponse, [<Optional>] ?query, [<Optional>] ?headers:seq<_>, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies:seq<_>, [<Optional>] ?cookieContainer, 
+                                       ?silentHttpErrors, [<Optional>] ?responseEncodingOverride, [<Optional>] ?customizeHttpRequest) =
         let uri = 
             Uri(Http.AppendQueryToUrl(url, defaultArg query []))
             |> UriUtils.enableUriSlashes
@@ -565,13 +672,14 @@ type Http private() =
         req.Method <- (defaultArg httpMethod defaultMethod).ToString()
 
         // set headers
+        let headers = defaultArg (Option.map List.ofSeq headers) []
         let hasContentType = setHeaders headers req
 
-        let automaticDecompression = ref true
+        let nativeAutomaticDecompression = ref true
 
     #if FX_NO_WEBREQUEST_AUTOMATICDECOMPRESSION
-        if not (req?AutomaticDecompression <- 3) then 
-            automaticDecompression := false
+        if isWindowsPhone || not (req?AutomaticDecompression <- 3) then 
+            nativeAutomaticDecompression := false
             req.Headers.[HeaderEnum.AcceptEncoding] <- "gzip,deflate"
     #else
         req.AutomaticDecompression <- DecompressionMethods.GZip ||| DecompressionMethods.Deflate
@@ -582,7 +690,7 @@ type Http private() =
 
         match cookies with
         | None -> ()
-        | Some cookies -> cookies |> List.iter (fun (name, value) -> cookieContainer.Add(req.RequestUri, Cookie(name, value)))
+        | Some cookies -> cookies |> List.ofSeq |> List.iter (fun (name, value) -> cookieContainer.Add(req.RequestUri, Cookie(name, value)))
         try
             req.CookieContainer <- cookieContainer
         with :? NotImplementedException ->
@@ -594,13 +702,13 @@ type Http private() =
 
             let defaultContentType, bytes =
                 match body with
-                | TextRequest text -> HttpContentTypes.Text, Encoding.UTF8.GetBytes(text)
+                | TextRequest text -> HttpContentTypes.Text, HttpEncodings.PostDefaultEncoding.GetBytes(text)
                 | BinaryUpload bytes -> HttpContentTypes.Binary, bytes
                 | FormValues values -> 
                     let bytes = 
                         [ for k, v in values -> Uri.EscapeDataString k + "=" + Uri.EscapeDataString v ]
                         |> String.concat "&"
-                        |> Encoding.UTF8.GetBytes
+                        |> HttpEncodings.PostDefaultEncoding.GetBytes
                     HttpContentTypes.FormValues, bytes
 
             // Set default content type if it is not specified by the user
@@ -610,24 +718,28 @@ type Http private() =
 
         // Send the request and get the response
         augmentWebExceptionsWithDetails <| fun () -> async {
-   
-            match body with
-            | Some body -> do! writeBody req body
-            | None -> ()
 
             let req = 
                 match customizeHttpRequest with
                 | Some customizeHttpRequest -> customizeHttpRequest req
                 | None -> req
+   
+            match body with
+            | Some body -> do! writeBody req body
+            | None -> ()
 
             let! resp = getResponse req silentHttpErrors
-
-            let cookies = Map.ofList [ for cookie in cookieContainer.GetCookies uri |> Seq.cast<Cookie> -> cookie.Name, cookie.Value ]  
 
             let headers = 
                 [ for header in resp.Headers.AllKeys do 
                     yield header, resp.Headers.[header] ]
                 |> Map.ofList
+                
+            match headers.TryFind HttpResponseHeaders.SetCookie with
+            | Some cookieHeader -> getAllCookiesFromHeader cookieHeader resp.ResponseUri cookieContainer
+            | None -> ()
+
+            let cookies = Map.ofList [ for cookie in cookieContainer.GetCookies uri |> Seq.cast<Cookie> -> cookie.Name, cookie.Value ]  
 
             let statusCode, characterSet = 
                 match resp with
@@ -639,22 +751,16 @@ type Http private() =
 #endif
                 | _ -> 0, ""
 
+            let characterSet = if characterSet = null then "" else characterSet
+
             let contentEncoding = 
-                if !automaticDecompression
-                then "" 
+                // .NET removes the gzip/deflate from the content encoding header when it handles the decompression itself, but Mono doesn't, so we clear it explicitely
+                if !nativeAutomaticDecompression then ""
                 else defaultArg (Map.tryFind HttpResponseHeaders.ContentEncoding headers) ""
 
-            use stream = resp.GetResponseStream()
-            let! memoryStream = asyncRead stream
+            let stream = resp.GetResponseStream()
 
-            let memoryStream = 
-                // this only applies when automatic decompression is off
-                if contentEncoding = "gzip" then decompressGZip memoryStream
-                elif contentEncoding = "deflate" then decompressDeflate memoryStream
-                else memoryStream
-
-            return! toHttpResponse resp.ResponseUri.OriginalString statusCode resp.ContentType characterSet
-                                   responseEncodingOverride cookies headers memoryStream
+            return! toHttpResponse resp.ResponseUri.OriginalString statusCode resp.ContentType contentEncoding characterSet responseEncodingOverride cookies headers stream
         }
 
     /// Download an HTTP web resource from the specified URL asynchronously
@@ -662,7 +768,7 @@ type Http private() =
     /// headers that have to be handled specially - such as Accept, Content-Type & Referer)
     /// The body for POST request can be specified either as text or as a list of parameters
     /// that will be encoded, and the method will automatically be set if not specified
-    static member AsyncRequest(url, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, ?silentHttpErrors, ?responseEncodingOverride, ?customizeHttpRequest) = 
+    static member AsyncRequest(url, [<Optional>] ?query, [<Optional>] ?headers, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies, [<Optional>] ?cookieContainer, [<Optional>] ?silentHttpErrors, [<Optional>] ?responseEncodingOverride, [<Optional>] ?customizeHttpRequest) = 
         Http.InnerRequest(url, toHttpResponse (*forceText*)false, ?query=query, ?headers=headers, ?httpMethod=httpMethod, ?body=body, ?cookies=cookies, ?cookieContainer=cookieContainer, 
                           ?silentHttpErrors=silentHttpErrors, ?responseEncodingOverride=responseEncodingOverride, ?customizeHttpRequest=customizeHttpRequest)
 
@@ -671,7 +777,7 @@ type Http private() =
     /// headers that have to be handled specially - such as Accept, Content-Type & Referer)
     /// The body for POST request can be specified either as text or as a list of parameters
     /// that will be encoded, and the method will automatically be set if not specified
-    static member AsyncRequestString(url, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, ?silentHttpErrors, ?responseEncodingOverride, ?customizeHttpRequest) = async {
+    static member AsyncRequestString(url, [<Optional>] ?query, [<Optional>] ?headers, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies, [<Optional>] ?cookieContainer, [<Optional>] ?silentHttpErrors, [<Optional>] ?responseEncodingOverride, [<Optional>] ?customizeHttpRequest) = async {
         let! response = Http.InnerRequest(url, toHttpResponse (*forceText*)true, ?query=query, ?headers=headers, ?httpMethod=httpMethod, ?body=body, ?cookies=cookies, ?cookieContainer=cookieContainer,
                                           ?silentHttpErrors=silentHttpErrors, ?responseEncodingOverride=responseEncodingOverride, ?customizeHttpRequest=customizeHttpRequest)
         return
@@ -685,8 +791,20 @@ type Http private() =
     /// headers that have to be handled specially - such as Accept, Content-Type & Referer)
     /// The body for POST request can be specified either as text or as a list of parameters
     /// that will be encoded, and the method will automatically be set if not specified
-    static member AsyncRequestStream(url, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, ?silentHttpErrors, ?customizeHttpRequest) =
-        let toHttpResponse responseUrl statusCode _contentType _characterSet _responseEncodingOverride cookies headers stream = async {
+    static member AsyncRequestStream(url, [<Optional>] ?query, [<Optional>] ?headers, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies, [<Optional>] ?cookieContainer, [<Optional>] ?silentHttpErrors, [<Optional>] ?customizeHttpRequest) =
+        let toHttpResponse responseUrl statusCode _contentType contentEncoding _characterSet _responseEncodingOverride cookies headers stream = async {
+            let! stream = async {
+                // this only applies when automatic decompression is off
+                if contentEncoding = "gzip" then 
+                    use stream = stream
+                    let! memoryStream = asyncRead stream
+                    return decompressGZip memoryStream :> Stream
+                elif contentEncoding = "deflate" then 
+                    use stream = stream
+                    let! memoryStream = asyncRead stream
+                    return decompressDeflate memoryStream :> Stream
+                else
+                    return stream }
             return { ResponseStream = stream
                      StatusCode = statusCode
                      ResponseUrl = responseUrl
@@ -701,7 +819,7 @@ type Http private() =
     /// headers that have to be handled specially - such as Accept, Content-Type & Referer)
     /// The body for POST request can be specified either as text or as a list of parameters
     /// that will be encoded, and the method will automatically be set if not specified
-    static member Request(url, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, ?silentHttpErrors, ?responseEncodingOverride, ?customizeHttpRequest) = 
+    static member Request(url, [<Optional>] ?query, [<Optional>] ?headers, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies, [<Optional>] ?cookieContainer, [<Optional>] ?silentHttpErrors, [<Optional>] ?responseEncodingOverride, [<Optional>] ?customizeHttpRequest) = 
         Http.AsyncRequest(url, ?query=query, ?headers=headers, ?httpMethod=httpMethod, ?body=body, ?cookies=cookies, ?cookieContainer=cookieContainer, 
                           ?silentHttpErrors=silentHttpErrors, ?responseEncodingOverride=responseEncodingOverride, ?customizeHttpRequest=customizeHttpRequest)
         |> Async.RunSynchronously
@@ -711,7 +829,7 @@ type Http private() =
     /// headers that have to be handled specially - such as Accept, Content-Type & Referer)
     /// The body for POST request can be specified either as text or as a list of parameters
     /// that will be encoded, and the method will automatically be set if not specified
-    static member RequestString(url, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, ?silentHttpErrors, ?responseEncodingOverride, ?customizeHttpRequest) = 
+    static member RequestString(url, [<Optional>] ?query, [<Optional>] ?headers, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies, [<Optional>] ?cookieContainer, [<Optional>] ?silentHttpErrors, [<Optional>] ?responseEncodingOverride, [<Optional>] ?customizeHttpRequest) = 
         Http.AsyncRequestString(url, ?query=query, ?headers=headers, ?httpMethod=httpMethod, ?body=body, ?cookies=cookies, ?cookieContainer=cookieContainer, 
                                 ?silentHttpErrors=silentHttpErrors, ?responseEncodingOverride=responseEncodingOverride, ?customizeHttpRequest=customizeHttpRequest)
         |> Async.RunSynchronously
@@ -721,7 +839,7 @@ type Http private() =
     /// headers that have to be handled specially - such as Accept, Content-Type & Referer)
     /// The body for POST request can be specified either as text or as a list of parameters
     /// that will be encoded, and the method will automatically be set if not specified
-    static member RequestStream(url, ?query, ?headers, ?httpMethod, ?body, ?cookies, ?cookieContainer, ?silentHttpErrors, ?customizeHttpRequest) = 
+    static member RequestStream(url, [<Optional>] ?query, [<Optional>] ?headers, [<Optional>] ?httpMethod, [<Optional>] ?body, [<Optional>] ?cookies, [<Optional>] ?cookieContainer, [<Optional>] ?silentHttpErrors, [<Optional>] ?customizeHttpRequest) = 
         Http.AsyncRequestStream(url, ?query=query, ?headers=headers, ?httpMethod=httpMethod, ?body=body, ?cookies=cookies, ?cookieContainer=cookieContainer, 
                                 ?silentHttpErrors=silentHttpErrors, ?customizeHttpRequest=customizeHttpRequest)
         |> Async.RunSynchronously
